@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    /* Фоновый цвет (жемчужно-серый) и цвет текста по умолчанию */
+    @apply bg-pearl-gray text-slate-900 antialiased;
+  }
+}
