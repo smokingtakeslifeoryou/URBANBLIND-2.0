@@ -1,5 +1,33 @@
-from fastapi import FastAPI
+import random
+import os
+import base64
+from fastapi import FastAPI, Depends
+from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import AsyncSession
+from dotenv import load_dotenv
+from google import genai
+from google.genai import types
+
+# Загружаем .env файл
+load_dotenv()
+
+# Инициализируем Gemini Vision клиент
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+    print("✅ Gemini Vision API: инициализирован (google.genai)")
+else:
+    gemini_client = None
+    print("⚠️  GEMINI_API_KEY не задан — Vision API будет использовать мок")
+
+# Импортируем нашу RouteRequest
+from schemas import RiskZoneCreate, RiskZoneResponse, RouteRequest
+from database import AsyncSessionLocal
+from services.risk_engine import add_risk_zone_and_diffuse, get_risk_edges_geojson, get_full_network_geojson
+
+# Импортируем новый сервис маршрутизации
+from services.routing import find_safe_route
 
 app = FastAPI(
     title="UrbanBlind Core API",
@@ -20,11 +48,211 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+async def get_db():
+    async with AsyncSessionLocal() as session:
+        yield session
+
 @app.get("/api/health")
 async def health_check():
-    """Тестовый эндпоинт доступности сервера"""
     return {
         "status": "ok",
         "engine": "UrbanBlind Core",
-        "version": "0.1.0"
+        "version": "0.1.0",
+        "vision_api": "gemini-2.0-flash (google.genai)" if gemini_client else "mock"
     }
+
+@app.post("/api/risk-zones", response_model=RiskZoneResponse)
+async def create_risk_zone(zone_in: RiskZoneCreate, db: AsyncSession = Depends(get_db)):
+    zone_id = await add_risk_zone_and_diffuse(db, zone_in)
+    return RiskZoneResponse(id=zone_id, message="Risk zone added and diffused successfully.")
+
+@app.get("/api/map/risk-layers")
+async def get_risk_layers(db: AsyncSession = Depends(get_db)):
+    geojson_data = await get_risk_edges_geojson(db)
+    return geojson_data
+
+@app.get("/api/map/network")
+async def get_full_network(db: AsyncSession = Depends(get_db)):
+    """
+    Скачивает весь граф дорог из БД (edges) в формате GeoJSON
+    для первоначальной отрисовки карты на клиенте.
+    """
+    geojson_data = await get_full_network_geojson(db)
+    return geojson_data
+
+@app.post("/api/route")
+async def calculate_route(req: RouteRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Рассчитывает самый безопасный маршрут между двумя точками с учетом диффузии риска.
+    Возвращает список LineString-ов в виде GeoJSON FeatureCollection для Deck.gl.
+    """
+    route_geojson = await find_safe_route(db, req)
+    return route_geojson
+
+# Системный промпт для AI-поводыря (жёсткий, без воды)
+VISION_SYSTEM_PROMPT = (
+    "Ты — ИИ-поводырь для незрячего человека. "
+    "Проанализируй кадр с камеры смартфона (уровень груди). "
+    "Ищи ТОЛЬКО физические препятствия прямо по курсу: "
+    "ямы, брошенные самокаты, открытые люки, столбы, низкие ветки, бордюры. "
+    "Если путь чист и явных преград нет — ответь ровно одним словом: CLEAN. "
+    "Если есть угроза — ответь коротким предупреждением на русском языке "
+    "(максимум 5-8 слов, например: 'Впереди открытый люк' или 'Осторожно, брошенный самокат'). "
+    "Никаких лишних слов, пояснений или вводных фраз."
+)
+
+# Мок-препятствия для режима без API ключа
+MOCK_HAZARDS = [
+    "Внимание, препятствие: припаркованный электросамокат",
+    "Осторожно, опасность: глубокая яма в тротуаре",
+    "Внимание: низко нависающая ветка дерева",
+    "Осторожно: большая лужа перекрывает тротуар",
+    "Внимание: строительные леса, сужение прохода",
+]
+
+@app.post("/api/vision/analyze")
+async def analyze_vision_frame(payload: dict, db: AsyncSession = Depends(get_db)):
+    """
+    Анализирует кадр через Gemini Vision.
+    При обнаружении угрозы + координатах пользователя —
+    автоматически поднимает риск ближайшего ребра в PostGIS (краудсорсинг).
+    """
+    image_base64_raw = payload.get("image_base64", "")
+    lat = payload.get("lat")
+    lon = payload.get("lon")
+    force_hazard = payload.get("force_hazard", False)  # ручное тестирование
+
+    if not image_base64_raw:
+        return {"hazard_detected": False}
+
+    hazard_detected = False
+    message = None
+
+    # === РЕЖИМ ПРИНУДИТЕЛЬНОГО ТЕСТА ===
+    if force_hazard:
+        hazard_detected = True
+        message = random.choice(MOCK_HAZARDS)
+
+    # === БОЕВОЙ РЕЖИМ: google.genai SDK ===
+    elif gemini_client:
+        try:
+            if "," in image_base64_raw:
+                image_base64_clean = image_base64_raw.split(",", 1)[1]
+            else:
+                image_base64_clean = image_base64_raw
+
+            image_bytes = base64.b64decode(image_base64_clean)
+
+            response = gemini_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[
+                    types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                    VISION_SYSTEM_PROMPT
+                ]
+            )
+
+            ai_response_text = response.text.strip()
+            print(f"🔍 Gemini Vision: '{ai_response_text}'")
+
+            if "clean" in ai_response_text.lower():
+                hazard_detected = False
+            else:
+                hazard_detected = True
+                message = ai_response_text
+
+        except Exception as e:
+            print(f"❌ Ошибка Gemini Vision API: {e}")
+            return {"hazard_detected": False}
+
+    # === МОК-РЕЖИМ: нет ключа ===
+    else:
+        if random.random() < 0.3:
+            hazard_detected = True
+            message = random.choice(MOCK_HAZARDS)
+
+    # === INCIDENT MANAGEMENT: консенсус вместо прямого UPDATE ===
+    if hazard_detected and lat is not None and lon is not None:
+        try:
+            # Шаг А: Найти ближайшее ребро
+            edge_query = text("""
+                SELECT id FROM edges
+                ORDER BY ST_Distance(
+                    geom::geography,
+                    ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography
+                )
+                LIMIT 1
+            """)
+            edge_result = await db.execute(edge_query, {"lat": lat, "lon": lon})
+            edge_id = edge_result.scalar_one_or_none()
+
+            if edge_id is not None:
+                # Шаг Б: Создать запись инцидента со статусом 'pending'
+                insert_incident = text("""
+                    INSERT INTO incidents (edge_id, geom, description, confidence, status)
+                    VALUES (
+                        :edge_id,
+                        ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
+                        :description,
+                        1.0,
+                        'pending'
+                    )
+                """)
+                await db.execute(insert_incident, {
+                    "edge_id": edge_id,
+                    "lon": lon,
+                    "lat": lat,
+                    "description": message or "Неизвестное препятствие"
+                })
+                print(f"📋 Инцидент создан: edge_id={edge_id}, '{message}'")
+
+                # Шаг В: Консенсус — pending-инциденты на этом ребре за 15 мин
+                consensus_query = text("""
+                    SELECT COUNT(*) FROM incidents
+                    WHERE edge_id = :edge_id
+                      AND status   = 'pending'
+                      AND created_at >= NOW() - INTERVAL '15 minutes'
+                """)
+                count_result = await db.execute(consensus_query, {"edge_id": edge_id})
+                incident_count = count_result.scalar_one()
+                print(f"🔢 Инцидентов на edge {edge_id} за 15 мин: {incident_count}")
+
+                # Шаг Г: Консенсус достигнут — верифицируем и поднимаем риск
+                if incident_count >= 2:
+                    verify_incidents = text("""
+                        UPDATE incidents
+                        SET status = 'verified'
+                        WHERE edge_id    = :edge_id
+                          AND status     = 'pending'
+                          AND created_at >= NOW() - INTERVAL '15 minutes'
+                    """)
+                    await db.execute(verify_incidents, {"edge_id": edge_id})
+
+                    raise_risk = text("""
+                        UPDATE edges
+                        SET current_risk_weight = current_risk_weight + 50
+                        WHERE id = :edge_id
+                    """)
+                    await db.execute(raise_risk, {"edge_id": edge_id})
+                    print(f"🚨 КОНСЕНСУС! Риск +50 для ребра {edge_id} ({incident_count} подтверждения)")
+
+            await db.commit()
+
+        except Exception as e:
+            print(f"❌ Ошибка Incident Management: {e}")
+            await db.rollback()
+
+    if hazard_detected:
+        return {"hazard_detected": True, "message": message}
+    return {"hazard_detected": False}
+
+
+@app.post("/api/map/reset_risks")
+async def reset_risks(db: AsyncSession = Depends(get_db)):
+    """
+    Сбрасывает все риски и инциденты — для демо-режима и модератора.
+    """
+    await db.execute(text("UPDATE edges SET current_risk_weight = 0"))
+    await db.execute(text("UPDATE incidents SET status = 'resolved'"))
+    await db.commit()
+    print("♻️ Все риски и инциденты сброшены")
+    return {"status": "success", "message": "Риски сброшены"}
