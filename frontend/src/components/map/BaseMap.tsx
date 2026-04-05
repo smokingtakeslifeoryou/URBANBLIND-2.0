@@ -5,19 +5,9 @@ import { FlyToInterpolator } from '@deck.gl/core';
 import { GeoJsonLayer, ScatterplotLayer } from '@deck.gl/layers';
 import Map from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { CameraScanner } from '../vision/CameraScanner';
-
-const speak = (text: string) => {
-  if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'ru-RU';
-    utterance.rate = 1.05;
-    utterance.pitch = 1.0;
-    window.speechSynthesis.speak(utterance);
-  }
-};
+import { IncidentDashboard } from '../ui/IncidentDashboard';
 
 const INITIAL_VIEW_STATE = {
   longitude: 49.1088,
@@ -35,6 +25,29 @@ export function BaseMap() {
   const [viewState, setViewState] = useState<any>(INITIAL_VIEW_STATE);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
+  const [incidentRefreshTrigger, setIncidentRefreshTrigger] = useState(0);
+  
+  // Управление голосовым сопровождением
+  const [isMuted, setIsMuted] = useState(true);
+  const isMutedRef = useRef(isMuted);
+
+  useEffect(() => {
+    isMutedRef.current = isMuted;
+  }, [isMuted]);
+
+  const speak = useCallback((text: string) => {
+    if (isMutedRef.current) return;
+    
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'ru-RU';
+      utterance.rate = 1.05;
+      utterance.pitch = 1.0;
+      window.speechSynthesis.speak(utterance);
+    }
+  }, []);
+
   // AI-зрение
   const [isVisionEnabled, setIsVisionEnabled] = useState(false);
 
@@ -45,6 +58,53 @@ export function BaseMap() {
       .then(data => setNetworkData(data))
       .catch(err => console.error("Ошибка обновления графа:", err));
   }, []);
+
+  // === НОВЫЙ WEBSOCKET КЛИЕНТ (с автореконнектом) ===
+  useEffect(() => {
+    let ws: WebSocket;
+    let reconnectTimeout: NodeJS.Timeout;
+
+    const connectWebSocket = () => {
+      ws = new WebSocket('ws://localhost:8000/ws/incidents');
+
+      ws.onopen = () => {
+        console.log("WebSocket: Соединение установлено");
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === 'HAZARD_UPDATED') {
+            console.log("WebSocket: HAZARD_UPDATED -> Обновляем карту и дашборд");
+            handleHazardDetected();
+            setIncidentRefreshTrigger(Date.now());
+          }
+        } catch (err) {
+          console.error("Ошибка парсинга WS:", err);
+        }
+      };
+
+      ws.onclose = () => {
+        console.log("WebSocket: Соединение закрыто. Переподключение через 3 секунды...");
+        reconnectTimeout = setTimeout(connectWebSocket, 3000);
+      };
+
+      ws.onerror = (err) => {
+        console.error("WebSocket: Ошибка", err);
+        ws.close(); // Форсируем вызов onclose для реконнекта
+      };
+    };
+
+    connectWebSocket();
+
+    return () => {
+      clearTimeout(reconnectTimeout);
+      if (ws) {
+        ws.onclose = null; // Отключаем реконнект при размонтировании
+        ws.close();
+      }
+    };
+  }, [handleHazardDetected]);
 
   useEffect(() => {
     fetch('http://localhost:8000/api/map/network')
@@ -79,7 +139,7 @@ export function BaseMap() {
     } catch {
       speak("Сетевая ошибка");
     }
-  }, []);
+  }, [speak]); // Добавили speak в зависимости
 
   useEffect(() => {
     if (startPoint && endPoint) {
@@ -224,10 +284,22 @@ export function BaseMap() {
 
     return (
       <div className="absolute top-6 left-6 z-20 bg-black/60 backdrop-blur-md p-5 rounded-2xl border border-white/20 shadow-2xl text-white font-sans max-w-sm pointer-events-auto transition-all duration-300">
-        <h3 className="text-xs font-bold tracking-wider uppercase text-emerald-400 mb-3 flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-          Навигатор UrbanBlind
-        </h3>
+        
+        {/* Заголовок и переключатель звука */}
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-xs font-bold tracking-wider uppercase text-emerald-400 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+            Навигатор UrbanBlind
+          </h3>
+          <button 
+            onClick={() => setIsMuted(!isMuted)}
+            className={`text-lg transition-opacity ${isMuted ? 'opacity-50 hover:opacity-80' : 'opacity-100 hover:opacity-80'}`}
+            title={isMuted ? "Включить голосовое сопровождение" : "Выключить голосовое сопровождение"}
+          >
+            {isMuted ? "🔇" : "🔊"}
+          </button>
+        </div>
+
         <p className="text-sm font-medium mb-4 text-white/90 leading-relaxed">{statusText}</p>
 
         {/* Поиск адреса */}
@@ -311,6 +383,10 @@ export function BaseMap() {
     <div className="absolute inset-0 w-full h-full z-0 font-sans pointer-events-none">
       <div className="absolute inset-0 z-20 pointer-events-none">
         {renderOverlay()}
+        
+        {/* === НОВЫЙ БЛОК: Панель модератора справа === */}
+        <IncidentDashboard refreshTrigger={incidentRefreshTrigger} />
+
         {/* AI-камера: плавающее окно в правом нижнем углу */}
         {isVisionEnabled && (
           <CameraScanner

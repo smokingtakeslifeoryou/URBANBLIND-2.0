@@ -1,7 +1,7 @@
 import random
 import os
 import base64
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,6 +47,37 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# === WebSocket Manager ===
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except Exception:
+                pass
+
+manager = ConnectionManager()
+
+@app.websocket("/ws/incidents")
+async def websocket_incidents_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 async def get_db():
     async with AsyncSessionLocal() as session:
@@ -235,6 +266,9 @@ async def analyze_vision_frame(payload: dict, db: AsyncSession = Depends(get_db)
                     await db.execute(raise_risk, {"edge_id": edge_id})
                     print(f"🚨 КОНСЕНСУС! Риск +50 для ребра {edge_id} ({incident_count} подтверждения)")
 
+                    # Мгновенное оповещение фронтенда
+                    await manager.broadcast('{"type": "HAZARD_UPDATED"}')
+
             await db.commit()
 
         except Exception as e:
@@ -245,6 +279,30 @@ async def analyze_vision_frame(payload: dict, db: AsyncSession = Depends(get_db)
         return {"hazard_detected": True, "message": message}
     return {"hazard_detected": False}
 
+# === НОВЫЙ ЭНДПОИНТ: Dashboard инцидентов ===
+@app.get("/api/incidents")
+async def get_recent_incidents(db: AsyncSession = Depends(get_db)):
+    """
+    Возвращает последние 20 инцидентов для дашборда модератора.
+    """
+    query = text("""
+        SELECT id, description, status, confidence, created_at
+        FROM incidents
+        ORDER BY created_at DESC
+        LIMIT 20
+    """)
+    result = await db.execute(query)
+    
+    incidents = []
+    for row in result.fetchall():
+        incidents.append({
+            "id": row[0],
+            "description": row[1],
+            "status": row[2],
+            "confidence": row[3],
+            "created_at": row[4].isoformat() if row[4] else None
+        })
+    return incidents
 
 @app.post("/api/map/reset_risks")
 async def reset_risks(db: AsyncSession = Depends(get_db)):
