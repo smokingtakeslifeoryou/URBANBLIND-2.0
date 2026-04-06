@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter, Roboto_Mono, Playfair_Display } from "next/font/google";
 import "./globals.css";
 
@@ -20,9 +20,26 @@ const playfair = Playfair_Display({
   variable: "--font-playfair-display", // Связываем с tailwind.config
 });
 
+export const viewport: Viewport = {
+  themeColor: "#10B981",
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false, // Запрет зума важен для нативных PWA интерфейсов
+};
+
 export const metadata: Metadata = {
-  title: "UrbanBlind | Analytics",
-  description: "Аналитика безопасности городской среды",
+  title: "Urban-Blind: Доступная Казань",
+  description: "Система навигации для людей с ограниченной мобильностью",
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "Urban-Blind",
+  },
+  formatDetection: {
+    telephone: false,
+  },
 };
 
 export default function RootLayout({

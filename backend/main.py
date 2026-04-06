@@ -2,6 +2,7 @@ import random
 import os
 import base64
 from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,6 +83,66 @@ async def websocket_incidents_endpoint(websocket: WebSocket):
 async def get_db():
     async with AsyncSessionLocal() as session:
         yield session
+
+# === Инициализируем планировщик ===
+scheduler = AsyncIOScheduler()
+
+async def cleanup_old_incidents():
+    """Фоновая задача для очистки инцидентов старше 24 часов и снижения рисков"""
+    print("🧹 [APScheduler] Запуск проверки устаревших инцидентов...")
+    
+    # Открываем независимую сессию для фоновой задачи
+    async with AsyncSessionLocal() as db:
+        try:
+            # Находим edge_id устаревших инцидентов
+            find_old = text("""
+                SELECT edge_id FROM incidents
+                WHERE status = 'verified'
+                  AND created_at < NOW() - INTERVAL '24 hours'
+            """)
+            result = await db.execute(find_old)
+            edges_to_clean = [row[0] for row in result.fetchall()]
+            
+            if not edges_to_clean:
+                print("✨ [APScheduler] Устаревших инцидентов нет. Граф чист.")
+                return
+                
+            # Шаг А: Помечаем инциденты как resolved
+            resolve_incidents = text("""
+                UPDATE incidents
+                SET status = 'resolved'
+                WHERE status = 'verified'
+                  AND created_at < NOW() - INTERVAL '24 hours'
+            """)
+            await db.execute(resolve_incidents)
+            
+            # Шаг Б: Снижаем current_risk_weight у найденных рёбер
+            for edge_id in edges_to_clean:
+                reduce_risk = text("""
+                    UPDATE edges
+                    SET current_risk_weight = GREATEST(current_risk_weight - 50, 0)
+                    WHERE id = :edge_id
+                """)
+                await db.execute(reduce_risk, {"edge_id": edge_id})
+                
+            await db.commit()
+            print(f"✅ [APScheduler] Устранены риски для {len(edges_to_clean)} инцидентов.")
+            
+        except Exception as e:
+            await db.rollback()
+            print(f"❌ [APScheduler] Ошибка очистки графа: {e}")
+
+@app.on_event("startup")
+async def startup_event():
+    # Запускаем задачу каждый час
+    scheduler.add_job(cleanup_old_incidents, 'interval', hours=1)
+    scheduler.start()
+    print("⏳ Планировщик APScheduler запущен (интервал: 1 час).")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    scheduler.shutdown()
+    print("🛑 Планировщик APScheduler корректно остановлен.")
 
 @app.get("/api/health")
 async def health_check():

@@ -2,16 +2,6 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-const speak = (text: string) => {
-  if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'ru-RU';
-    utterance.rate = 1.05;
-    window.speechSynthesis.speak(utterance);
-  }
-};
-
 interface CameraScannerProps {
   onClose?: () => void;
   userLocation?: [number, number]; // [longitude, latitude]
@@ -73,8 +63,7 @@ export function CameraScanner({ onClose, userLocation, onHazardDetected }: Camer
         const result = await response.json();
         if (result.hazard_detected && result.message) {
           setLastAlert(result.message);
-          speak(result.message);
-          // Уведомляем BaseMap обновить сетевые данные
+          // Уведомляем BaseMap обновить сетевые данные (без голоса!)
           if (onHazardDetected) onHazardDetected();
         }
       }
@@ -100,22 +89,18 @@ export function CameraScanner({ onClose, userLocation, onHazardDetected }: Camer
         if (videoRef.current) videoRef.current.srcObject = stream;
 
         setStatus('active');
-        speak("AI-зрение активировано");
 
-        // Анализ каждые 60 секунд (стабильно для free tier Gemini)
+        // Анализ каждые 60 секунд (стабильно)
         intervalRef.current = setInterval(captureAndAnalyze, 60000);
 
       } catch (err: any) {
         setStatus('error');
         if (err.name === 'NotAllowedError') {
           setErrorMessage('Доступ к камере запрещён');
-          speak("Не удалось получить доступ к камере.");
         } else if (err.name === 'NotFoundError') {
           setErrorMessage('Камера не найдена');
-          speak("Не удалось получить доступ к камере. Устройство не обнаружено.");
         } else {
           setErrorMessage('Неизвестная ошибка');
-          speak("Не удалось получить доступ к камере.");
         }
       }
     };
@@ -235,7 +220,7 @@ export function CameraScanner({ onClose, userLocation, onHazardDetected }: Camer
                       const data = await res.json();
                       if (data.hazard_detected) {
                         setLastAlert(data.message || 'Обнаружено учебное препятствие');
-                        speak(data.message || 'Внимание, обнаружено препятствие');
+                        // Вызов коллбека без голоса
                         if (onHazardDetected) onHazardDetected();
                       }
                     } catch(e) {

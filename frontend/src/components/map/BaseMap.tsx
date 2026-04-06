@@ -5,7 +5,7 @@ import { FlyToInterpolator } from '@deck.gl/core';
 import { GeoJsonLayer, ScatterplotLayer } from '@deck.gl/layers';
 import Map from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { CameraScanner } from '../vision/CameraScanner';
 import { IncidentDashboard } from '../ui/IncidentDashboard';
 
@@ -27,31 +27,10 @@ export function BaseMap() {
   const [isSearching, setIsSearching] = useState(false);
   const [incidentRefreshTrigger, setIncidentRefreshTrigger] = useState(0);
   
-  // Управление голосовым сопровождением
-  const [isMuted, setIsMuted] = useState(true);
-  const isMutedRef = useRef(isMuted);
-
-  useEffect(() => {
-    isMutedRef.current = isMuted;
-  }, [isMuted]);
-
-  const speak = useCallback((text: string) => {
-    if (isMutedRef.current) return;
-    
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'ru-RU';
-      utterance.rate = 1.05;
-      utterance.pitch = 1.0;
-      window.speechSynthesis.speak(utterance);
-    }
-  }, []);
-
   // AI-зрение
   const [isVisionEnabled, setIsVisionEnabled] = useState(false);
 
-  // Коллбэк при обнаружении угрозы — перезагружаем граф (красные линии)
+  // Коллбэк при обнаружении угрозы
   const handleHazardDetected = useCallback(() => {
     fetch('http://localhost:8000/api/map/network')
       .then(res => res.json())
@@ -59,7 +38,7 @@ export function BaseMap() {
       .catch(err => console.error("Ошибка обновления графа:", err));
   }, []);
 
-  // === НОВЫЙ WEBSOCKET КЛИЕНТ (с автореконнектом) ===
+  // WEBSOCKET КЛИЕНТ
   useEffect(() => {
     let ws: WebSocket;
     let reconnectTimeout: NodeJS.Timeout;
@@ -67,15 +46,12 @@ export function BaseMap() {
     const connectWebSocket = () => {
       ws = new WebSocket('ws://localhost:8000/ws/incidents');
 
-      ws.onopen = () => {
-        console.log("WebSocket: Соединение установлено");
-      };
+      ws.onopen = () => console.log("WebSocket установлен");
 
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
           if (message.type === 'HAZARD_UPDATED') {
-            console.log("WebSocket: HAZARD_UPDATED -> Обновляем карту и дашборд");
             handleHazardDetected();
             setIncidentRefreshTrigger(Date.now());
           }
@@ -85,14 +61,10 @@ export function BaseMap() {
       };
 
       ws.onclose = () => {
-        console.log("WebSocket: Соединение закрыто. Переподключение через 3 секунды...");
         reconnectTimeout = setTimeout(connectWebSocket, 3000);
       };
 
-      ws.onerror = (err) => {
-        console.error("WebSocket: Ошибка", err);
-        ws.close(); // Форсируем вызов onclose для реконнекта
-      };
+      ws.onerror = () => ws.close();
     };
 
     connectWebSocket();
@@ -100,7 +72,7 @@ export function BaseMap() {
     return () => {
       clearTimeout(reconnectTimeout);
       if (ws) {
-        ws.onclose = null; // Отключаем реконнект при размонтировании
+        ws.onclose = null;
         ws.close();
       }
     };
@@ -128,18 +100,11 @@ export function BaseMap() {
       if (response.ok) {
         const data = await response.json();
         setRouteData(data);
-        if (data.features && data.features.length > 0) {
-          speak("Безопасный маршрут построен");
-        } else {
-          speak("К сожалению, маршрут не найден");
-        }
-      } else {
-        speak("Произошла ошибка при расчете маршрута");
       }
-    } catch {
-      speak("Сетевая ошибка");
+    } catch (e) {
+      console.error(e);
     }
-  }, [speak]); // Добавили speak в зависимости
+  }, []); 
 
   useEffect(() => {
     if (startPoint && endPoint) {
@@ -149,10 +114,7 @@ export function BaseMap() {
 
   const searchDestination = async () => {
     if (!searchQuery.trim()) return;
-
-    speak("Ищу адрес");
     setIsSearching(true);
-
     try {
       const query = encodeURIComponent(`Казань ${searchQuery}`);
       const response = await fetch(
@@ -164,22 +126,14 @@ export function BaseMap() {
       if (results && results.length > 0) {
         const lat = parseFloat(results[0].lat);
         const lon = parseFloat(results[0].lon);
-
         setEndPoint([lon, lat]);
         setViewState((prev: any) => ({
-          ...prev,
-          longitude: lon,
-          latitude: lat,
-          zoom: 16,
-          transitionDuration: 1200,
-          transitionInterpolator: new FlyToInterpolator()
+          ...prev, longitude: lon, latitude: lat, zoom: 16,
+          transitionDuration: 1200, transitionInterpolator: new FlyToInterpolator()
         }));
-        speak("Адрес найден, выстраиваю маршрут");
-      } else {
-        speak("Адрес не найден, попробуйте уточнить запрос");
       }
-    } catch {
-      speak("Ошибка при поиске адреса");
+    } catch(e) {
+      console.error(e);
     } finally {
       setIsSearching(false);
     }
@@ -187,7 +141,6 @@ export function BaseMap() {
 
   const locateUser = () => {
     if ('geolocation' in navigator) {
-      speak("Определяю ваше местоположение. Пожалуйста, подождите.");
       navigator.geolocation.getCurrentPosition(
         (position) => {
           const { longitude, latitude } = position.coords;
@@ -195,20 +148,13 @@ export function BaseMap() {
           setEndPoint(null);
           setRouteData(null);
           setViewState((prev: any) => ({
-            ...prev,
-            longitude,
-            latitude,
-            zoom: 16,
-            transitionDuration: 1500,
-            transitionInterpolator: new FlyToInterpolator()
+            ...prev, longitude, latitude, zoom: 16,
+            transitionDuration: 1500, transitionInterpolator: new FlyToInterpolator()
           }));
-          speak("Ваше местоположение определено. Выберите точку финиша.");
         },
-        () => speak("Не удалось определить местоположение. Проверьте разрешения браузера."),
+        () => console.error("Геолокация недоступна"),
         { enableHighAccuracy: true, timeout: 10000 }
       );
-    } else {
-      speak("Геолокация не поддерживается вашим устройством");
     }
   };
 
@@ -220,10 +166,8 @@ export function BaseMap() {
       setStartPoint([lon, lat]);
       setEndPoint(null);
       setRouteData(null);
-      speak("Точка старта установлена вручную");
     } else if (startPoint && !endPoint) {
       setEndPoint([lon, lat]);
-      speak("Ищу безопасный маршрут по пешеходным зонам");
     }
   };
 
@@ -242,7 +186,7 @@ export function BaseMap() {
     },
     getLineWidth: 1,
     updateTriggers: {
-      getLineColor: [networkData] // форсирует перерасчёт цветов при обновлении данных
+      getLineColor: [networkData]
     }
   });
 
@@ -278,29 +222,20 @@ export function BaseMap() {
   });
 
   const renderOverlay = () => {
-    let statusText = "📍 Шаг 1: Кликните карту или найдите адрес";
-    if (startPoint && !endPoint) statusText = "🎯 Шаг 2: Кликните финиш или введите адрес";
-    if (routeData) statusText = "✅ Безопасный маршрут проложен!";
+    let statusText = "Шаг 1: Кликните карту или найдите адрес";
+    if (startPoint && !endPoint) statusText = "Шаг 2: Кликните финиш или введите адрес";
+    if (routeData) statusText = "Безопасный маршрут проложен!";
 
     return (
-      <div className="absolute top-6 left-6 z-20 bg-black/60 backdrop-blur-md p-5 rounded-2xl border border-white/20 shadow-2xl text-white font-sans max-w-sm pointer-events-auto transition-all duration-300">
+      <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20 w-[calc(100%-2rem)] sm:w-[380px] bg-white/90 backdrop-blur-xl border border-white/50 shadow-2xl rounded-[32px] p-5 text-slate-800 font-sans pointer-events-auto transition-all duration-500">
         
-        {/* Заголовок и переключатель звука */}
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-xs font-bold tracking-wider uppercase text-emerald-400 flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            Навигатор UrbanBlind
-          </h3>
-          <button 
-            onClick={() => setIsMuted(!isMuted)}
-            className={`text-lg transition-opacity ${isMuted ? 'opacity-50 hover:opacity-80' : 'opacity-100 hover:opacity-80'}`}
-            title={isMuted ? "Включить голосовое сопровождение" : "Выключить голосовое сопровождение"}
-          >
-            {isMuted ? "🔇" : "🔊"}
-          </button>
-        </div>
+        {/* Заголовок */}
+        <h3 className="text-xs font-bold tracking-wider uppercase text-emerald-500 flex items-center gap-2 mb-3">
+          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+          Навигатор UrbanBlind
+        </h3>
 
-        <p className="text-sm font-medium mb-4 text-white/90 leading-relaxed">{statusText}</p>
+        <p className="text-sm font-semibold mb-4 text-slate-600 leading-relaxed">{statusText}</p>
 
         {/* Поиск адреса */}
         <div className="flex gap-2 mb-4">
@@ -310,39 +245,42 @@ export function BaseMap() {
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && searchDestination()}
             placeholder="Улица, место в Казани..."
-            className="flex-1 bg-white/10 border border-white/20 rounded-xl px-3 py-2 text-sm text-white placeholder-white/40 outline-none focus:border-emerald-400/60 transition-colors"
+            className="flex-1 bg-slate-50 border border-slate-200 rounded-2xl px-4 py-2.5 text-sm text-slate-700 placeholder-slate-400 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/20 transition-all font-medium"
           />
           <button
             onClick={searchDestination}
             disabled={isSearching}
-            className="px-3 py-2 bg-blue-500/30 hover:bg-blue-500/50 disabled:opacity-50 disabled:cursor-wait transition-colors rounded-xl text-sm font-semibold border border-blue-400/30"
+            className="px-4 py-2.5 bg-slate-50 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-wait transition-colors rounded-2xl text-sm font-bold border border-slate-200 text-slate-600 shadow-sm"
           >
             {isSearching ? '⏳' : '🔍'}
           </button>
         </div>
 
-        <div className="flex flex-col gap-2">
+        {/* Сетка основных кнопок (Mobile First) */}
+        <div className="grid grid-cols-2 gap-3 mb-3">
           {/* GPS-кнопка */}
           <button
             onClick={locateUser}
-            className="w-full py-2.5 bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 transition-colors rounded-xl text-sm font-semibold tracking-wide border border-emerald-500/30 flex items-center justify-center gap-2"
+            className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white transition-colors rounded-2xl text-[13px] font-bold tracking-wide shadow-md flex items-center justify-center gap-1.5"
           >
-            🧭 Найти Меня (GPS)
+            🧭 Найти Меня
           </button>
 
           {/* Кнопка AI-зрения */}
           <button
             onClick={() => setIsVisionEnabled(prev => !prev)}
-            className={`w-full py-2.5 transition-colors rounded-xl text-sm font-semibold tracking-wide border flex items-center justify-center gap-2 ${
+            className={`w-full py-3 transition-colors rounded-2xl text-[13px] font-bold tracking-wide border flex items-center justify-center gap-1.5 ${
               isVisionEnabled
-                ? 'bg-violet-500/30 hover:bg-violet-500/50 text-violet-200 border-violet-400/30'
-                : 'bg-white/10 hover:bg-white/20 text-white/80 border-white/10'
+                ? 'bg-indigo-600 text-white border-indigo-700 shadow-md'
+                : 'bg-indigo-50 text-indigo-600 border-indigo-100 hover:bg-indigo-100'
             }`}
           >
-            {isVisionEnabled ? '👁️ AI-зрение ON' : '👁️ Включить AI-зрение'}
+            {isVisionEnabled ? '👁️ AI ON' : '👁️ AI-зрение'}
           </button>
+        </div>
 
-          {/* Сброс */}
+        <div className="flex flex-col gap-2">
+          {/* Сброс маршрута */}
           {(startPoint || endPoint) && (
             <button
               onClick={() => {
@@ -350,27 +288,25 @@ export function BaseMap() {
                 setEndPoint(null);
                 setRouteData(null);
                 setSearchQuery('');
-                speak("Маршрут сброшен");
               }}
-              className="w-full py-2.5 bg-white/10 hover:bg-white/25 transition-colors rounded-xl text-sm font-semibold tracking-wide border border-white/10"
+              className="w-full py-3 bg-slate-50 hover:bg-slate-100 text-slate-600 transition-colors rounded-2xl text-[13px] font-bold tracking-wide border border-slate-200"
             >
               Сбросить маршрут
             </button>
           )}
 
-          {/* Кнопка сброса рисков — для демо и модератора */}
+          {/* Кнопка сброса рисков */}
           <button
             onClick={async () => {
               try {
                 await fetch('http://localhost:8000/api/map/reset_risks', { method: 'POST' });
-                // Перезагружаем граф — красные линии исчезают
+                // Скрытый reload
                 handleHazardDetected();
-                speak("Все риски сброшены");
               } catch (e) {
                 console.error("Ошибка сброса рисков:", e);
               }
             }}
-            className="w-full py-2.5 bg-amber-500/15 hover:bg-amber-500/30 text-amber-300/80 hover:text-amber-200 transition-colors rounded-xl text-sm font-semibold tracking-wide border border-amber-500/20 flex items-center justify-center gap-2"
+            className="w-full py-3 bg-amber-50 hover:bg-amber-100 text-amber-600 transition-colors rounded-2xl text-[13px] font-bold tracking-wide border border-amber-200 flex items-center justify-center gap-2"
           >
             ♻️ Сбросить риски
           </button>
@@ -382,12 +318,14 @@ export function BaseMap() {
   return (
     <div className="absolute inset-0 w-full h-full z-0 font-sans pointer-events-none">
       <div className="absolute inset-0 z-20 pointer-events-none">
+        
+        {/* Главная панель управления (Bottom Sheet) */}
         {renderOverlay()}
         
-        {/* === НОВЫЙ БЛОК: Панель модератора справа === */}
+        {/* Панель модератора (Smart Toast) */}
         <IncidentDashboard refreshTrigger={incidentRefreshTrigger} />
 
-        {/* AI-камера: плавающее окно в правом нижнем углу */}
+        {/* Сканер камеры (Z-index 30 перекроет нижнюю панель, если что-то наложится) */}
         {isVisionEnabled && (
           <CameraScanner
             onClose={() => setIsVisionEnabled(false)}
