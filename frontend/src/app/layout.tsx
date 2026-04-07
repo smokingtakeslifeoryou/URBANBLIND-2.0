@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, Roboto_Mono, Playfair_Display } from "next/font/google";
 import "./globals.css";
+import ClientProtection from "./ClientProtection";
 
 // Основной UI шрифт (безопасный аналог Geist)
 const inter = Inter({
@@ -52,6 +53,7 @@ export default function RootLayout({
       <body
         className={`${inter.variable} ${robotoMono.variable} ${playfair.variable} font-sans`}
       >
+        <ClientProtection />
         {children}
       </body>
     </html>

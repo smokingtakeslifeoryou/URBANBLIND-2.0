@@ -35,15 +35,10 @@ app = FastAPI(
     version="0.1.0"
 )
 
-# Настройка CORS: прозрачный доступ для Next.js фронтенда
-origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-]
-
+# Настройка CORS: открытый доступ для туннелей и мобильных устройств
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -164,12 +159,18 @@ async def get_risk_layers(db: AsyncSession = Depends(get_db)):
     return geojson_data
 
 @app.get("/api/map/network")
-async def get_full_network(db: AsyncSession = Depends(get_db)):
+async def get_full_network(
+    min_lon: float = -180.0,
+    min_lat: float = -90.0,
+    max_lon: float = 180.0,
+    max_lat: float = 90.0,
+    db: AsyncSession = Depends(get_db)
+):
     """
-    Скачивает весь граф дорог из БД (edges) в формате GeoJSON
-    для первоначальной отрисовки карты на клиенте.
+    Скачивает граф дорог из БД (edges) в формате GeoJSON строго внутри заданного BBox
+    (текущего экрана на устройстве) для экономии ОЗУ и работы по всей стране.
     """
-    geojson_data = await get_full_network_geojson(db)
+    geojson_data = await get_full_network_geojson(db, min_lon, min_lat, max_lon, max_lat)
     return geojson_data
 
 @app.post("/api/route")

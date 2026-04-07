@@ -81,37 +81,56 @@ async def get_risk_edges_geojson(session: AsyncSession) -> dict:
         "features": features
     }
 
-async def get_full_network_geojson(session: AsyncSession) -> dict:
-    query = text("""
-        SELECT 
-            id,
-            base_weight,
-            current_risk_weight,
-            ST_AsGeoJSON(geom) as geometry
-        FROM edges;
-    """)
-    
-    result = await session.execute(query)
-    edges = result.fetchall()
-    
-    features = []
-    for edge in edges:
-        geom_str = edge.geometry
-        if not geom_str:
-            continue
-            
-        features.append({
-            "type": "Feature",
-            "properties": {
-                "id": edge.id,
-                "base_weight": edge.base_weight,
-                "current_risk_weight": float(edge.current_risk_weight)
-            },
-            "geometry": json.loads(geom_str)
-        })
+async def get_full_network_geojson(
+    session: AsyncSession, 
+    min_lon: float, 
+    min_lat: float, 
+    max_lon: float, 
+    max_lat: float
+) -> dict:
+    try:
+        query = text("""
+            SELECT 
+                id,
+                base_weight,
+                current_risk_weight,
+                ST_AsGeoJSON(geom) as geometry
+            FROM edges
+            WHERE geom && ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326);
+        """)
         
-    return {
-        "type": "FeatureCollection",
-        "features": features
-    }
+        result = await session.execute(query, {
+            "min_lon": min_lon,
+            "min_lat": min_lat,
+            "max_lon": max_lon,
+            "max_lat": max_lat
+        })
+        edges = result.fetchall()
+        
+        features = []
+        for edge in edges:
+            geom_str = edge.geometry
+            if not geom_str:
+                continue
+                
+            features.append({
+                "type": "Feature",
+                "properties": {
+                    "id": edge.id,
+                    "base_weight": edge.base_weight,
+                    "current_risk_weight": float(edge.current_risk_weight)
+                },
+                "geometry": json.loads(geom_str)
+            })
+            
+        return {
+            "type": "FeatureCollection",
+            "features": features
+        }
+    except Exception as e:
+        print(f"BBox вне пределов локальной БД или ошибка PostGIS: {e}")
+        return {
+            "type": "FeatureCollection",
+            "features": []
+        }
 
