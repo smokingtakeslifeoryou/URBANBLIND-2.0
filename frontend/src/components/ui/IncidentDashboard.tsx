@@ -18,8 +18,10 @@ export function IncidentDashboard({ refreshTrigger }: IncidentDashboardProps) {
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [isOpen, setIsOpen] = useState(false); 
 
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
   useEffect(() => {
-    fetch('http://localhost:8000/api/incidents')
+    fetch(`${API_URL}/api/incidents`)
       .then(res => res.json())
       .then(data => setIncidents(data))
       .catch(err => console.error("Ошибка загрузки инцидентов:", err));

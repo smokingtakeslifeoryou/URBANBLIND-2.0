@@ -9,6 +9,11 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { CameraScanner } from '../vision/CameraScanner';
 import { IncidentDashboard } from '../ui/IncidentDashboard';
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const WS_URL = process.env.NEXT_PUBLIC_API_URL 
+  ? process.env.NEXT_PUBLIC_API_URL.replace(/^http/, 'ws') + '/ws/incidents'
+  : 'ws://localhost:8000/ws/incidents';
+
 const INITIAL_VIEW_STATE = {
   longitude: 49.1088,
   latitude: 55.7963,
@@ -77,7 +82,7 @@ export function BaseMap() {
       const maxLon = bounds[2];
       const maxLat = bounds[3];
 
-      fetch(`http://localhost:8000/api/map/network?min_lon=${minLon}&min_lat=${minLat}&max_lon=${maxLon}&max_lat=${maxLat}`)
+      fetch(`${API_URL}/api/map/network?min_lon=${minLon}&min_lat=${minLat}&max_lon=${maxLon}&max_lat=${maxLat}`)
         .then(res => res.json())
         .then(data => setNetworkData(data))
         .catch(err => console.error("Ошибка обновления графа:", err));
@@ -95,7 +100,7 @@ export function BaseMap() {
     let reconnectTimeout: NodeJS.Timeout;
 
     const connectWebSocket = () => {
-      ws = new WebSocket('ws://localhost:8000/ws/incidents');
+      ws = new WebSocket(WS_URL);
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
@@ -383,7 +388,7 @@ export function BaseMap() {
           <ExpandableButton
             onClick={async () => {
               try {
-                await fetch('http://localhost:8000/api/map/reset_risks', { method: 'POST' });
+                await fetch(`${API_URL}/api/map/reset_risks`, { method: 'POST' });
                 handleHazardDetected();
               } catch (e) { console.error(e); }
             }}

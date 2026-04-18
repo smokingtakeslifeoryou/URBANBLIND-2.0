@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
 interface CameraScannerProps {
   onClose?: () => void;
   userLocation?: [number, number]; 
@@ -47,7 +49,7 @@ export function CameraScanner({ onClose, userLocation, onHazardDetected }: Camer
     } 
 
     try {
-      const response = await fetch('http://localhost:8000/api/vision/analyze', {
+      const response = await fetch(`${API_URL}/api/vision/analyze`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
       });
       if (response.ok) {
@@ -148,7 +150,7 @@ export function CameraScanner({ onClose, userLocation, onHazardDetected }: Camer
                     setIsSending(true);
                     const loc = userLocationRef.current!;
                     try {
-                      const res = await fetch('http://localhost:8000/api/vision/analyze', {
+                      const res = await fetch(`${API_URL}/api/vision/analyze`, {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ image_base64: 'test', lat: loc[1], lon: loc[0], force_hazard: true })
                       });
